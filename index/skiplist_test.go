@@ -2,6 +2,7 @@ package index_test
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,15 +26,12 @@ func TestSkipListInsertAndSearchBase(t *testing.T) {
 
 	entry1 := index.NewEntry([]byte(RandString(10)), []byte("Val1"))
 
-	//skiplist add entry1
 	l.Insert(entry1)
 
 	vs := l.Query(entry1.Key)
 
-	//excepted equal
 	assert.Equal(t, entry1.Value, vs.Value)
 
-	//key point this step we should
 	key2 := RandString(10)
 	entry2 := index.NewEntry([]byte(key2), []byte("Val2"))
 
@@ -41,11 +39,8 @@ func TestSkipListInsertAndSearchBase(t *testing.T) {
 
 	vs2 := l.Query(entry2.Key)
 
-	//excepted equal
 	assert.Equal(t, vs2.Value, []byte("Val2"))
 	assert.Equal(t, entry2.Value, vs2.Value)
-
-	//Update a entry
 
 	entry3 := index.NewEntry([]byte(key2), []byte("Val3"))
 
@@ -59,7 +54,7 @@ func TestSkipListInsertAndSearchBase(t *testing.T) {
 
 func TestConcurrentInsertAndQuery(t *testing.T) {
 	const n = 10000
-	l := index.NewSkiplist(1)
+	l := index.NewSkiplist(100000000)
 
 	var wg = &sync.WaitGroup{}
 	_ = wg
@@ -73,7 +68,6 @@ func TestConcurrentInsertAndQuery(t *testing.T) {
 			defer wg.Done()
 			l.Insert(index.NewEntry(generateKey(i), generateKey(i)))
 		}(i)
-		// l.Insert(index.NewEntry(generateKey(i), generateKey(i)))
 	}
 	wg.Wait()
 	require.EqualValues(t, 10001, l.Length())
@@ -84,6 +78,36 @@ func TestConcurrentInsertAndQuery(t *testing.T) {
 			vs := l.Query(generateKey(i))
 			require.EqualValues(t, generateKey(i), vs.Value)
 			return
+		}(i, wg)
+	}
+	wg.Wait()
+}
+func TestABCConcurrentInsertAndQuery(t *testing.T) {
+	const n = 10000
+	l := index.NewSkiplist(10000000)
+
+	var wg = &sync.WaitGroup{}
+	_ = wg
+	generateKey := func(i int) []byte {
+		return []byte(fmt.Sprintf("Keykeykey%05d", i))
+	}
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func(i int) {
+			defer wg.Done()
+			l.Add(index.NewEntry(generateKey(i), generateKey(i)))
+		}(i)
+	}
+	wg.Wait()
+	require.EqualValues(t, 10001, l.Length())
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int, wg *sync.WaitGroup) {
+			defer wg.Done()
+			vs := l.Query(generateKey(i))
+			require.EqualValues(t, generateKey(i), vs.Value)
+			fmt.Println(strings.TrimPrefix(string(vs.Value), "Keykeykey"))
 		}(i, wg)
 	}
 	wg.Wait()

@@ -2,7 +2,6 @@ package index
 
 import (
 	"log"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -10,38 +9,32 @@ import (
 )
 
 const (
-	// calculate the size of Node in skipList
-	MaxNodeSize = int(unsafe.Sizeof(Node{}))
+	// DefaultNodeSize is the Size of SikipList
+	DefaultNodeSize = int(unsafe.Sizeof(Node{}))
 	// AlignSize
 	AlignSize = int(unsafe.Sizeof(uint64(0))) - 1
 )
 
 //Arena a pre-allocate buffer
 type Arena struct {
-	//
 	used uint32
-	//
-	buf []byte
-	mux *sync.Mutex
+	buf  []byte
 }
 
 func NewArena(n int) *Arena {
 	return &Arena{
 		used: 1,
 		buf:  make([]byte, n),
-		mux:  &sync.Mutex{},
 	}
 }
 
 //allocate size
 func (a *Arena) alloc(size uint32) uint32 {
-	//calculate the unused buffer
-	//这个很关键不然的话就是发生问题
 	used := atomic.AddUint32(&a.used, size)
 
 	cap := len(a.buf) - int(used)
 
-	if cap < MaxNodeSize {
+	if cap < DefaultNodeSize {
 		grow := uint32(len(a.buf))
 
 		if grow > 1<<30 {
@@ -60,23 +53,6 @@ func (a *Arena) alloc(size uint32) uint32 {
 	return used - size
 }
 
-//putNodeV1 填入全部Node
-func (a *Arena) putNodeV1() uint32 {
-	// all height is initialize
-	nodeSize := uint32(unsafe.Sizeof(Node{}))
-	return a.alloc(nodeSize)
-}
-
-//putNodeV2 填入两个height
-func (a *Arena) putNodeV2(height int) uint32 {
-	nodeSize := uint32(unsafe.Sizeof(Node{}))
-	offsetSize := uint32(unsafe.Sizeof(uint32(0)))
-	unusedSize := (MaxLevels - height) * int(offsetSize)
-	l := uint32(nodeSize - uint32(unusedSize))
-	return a.alloc(l)
-}
-
-//putNodeV3 内存对齐
 func (a *Arena) putNodeV3(height int) uint32 {
 	nodeSize := uint32(unsafe.Sizeof(Node{}))
 	offsetSize := uint32(unsafe.Sizeof(uint32(0)))
@@ -116,13 +92,10 @@ func (a *Arena) putKey(key []byte) uint32 {
 	return offset
 }
 
-//getKey getKey
 func (a *Arena) getKey(off uint32, sz uint16) []byte {
-	//return the key in buf
 	return a.buf[off : off+uint32(sz)]
 }
 
-//putVal is a method to PutVal
 func (a *Arena) putVal(v ValueStruct) uint32 {
 	sz := v.EncodeSize()
 	offset := a.alloc(sz)
@@ -138,12 +111,10 @@ func (a *Arena) getVal(offset uint32, size uint32) (ret ValueStruct) {
 	return
 }
 
-//encodeValue 编码
 func encodeValue(valOffset uint32, valSize uint32) uint64 {
 	return uint64(valOffset) | uint64(valSize)<<32
 }
 
-//decodeValue 解码
 func decodeValue(value uint64) (valOffset uint32, valSize uint32) {
 	valOffset = uint32(value)
 	valSize = uint32(value >> 32)

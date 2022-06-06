@@ -2,7 +2,6 @@ package index
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -118,8 +117,8 @@ func (l *SkipList) Insert(e *Entry) {
 	prev[curLevel] = l.headOff
 
 	//我的锁必须要放在这里
-	l.mux.Lock()
-	defer l.mux.Unlock()
+	// l.mux.Lock()
+	// defer l.mux.Unlock()
 	for i := int(curLevel) - 1; i >= 0; i-- {
 		//获得应该插入位置的前一个节点和后一个节点
 		prev[i], next[i] = l.findPNForLevel(key, prev[i+1], i)
@@ -141,8 +140,8 @@ func (l *SkipList) Insert(e *Entry) {
 	//如果说锁放在这里会出错的话,假设有两个协程AB，同时操作这里prev[i]和next[i]
 	//corekv main分支可以把锁加在这里放在这里，我加在这里就直接gg，暂时没想到什么好的调试多线程的方式
 	//gei level
-	// l.mux.Lock()
-	// defer l.mux.Unlock()
+	l.mux.Lock()
+	defer l.mux.Unlock()
 	newLevel := l.randomLevel()
 	newNode := NewNode(l.arena, key, val, newLevel)
 	curLevel = l.getHeight()
@@ -168,7 +167,7 @@ func (l *SkipList) Insert(e *Entry) {
 			// whatever next[i] =nil
 			newNode.next[i] = next[i]
 			pnode := l.arena.getNodeV3(prev[i])
-			if pnode.casNextOffset(i, pnode.next[i], l.arena.getNodeOffset(newNode)) {
+			if pnode.casNextOffset(i, next[i], l.arena.getNodeOffset(newNode)) {
 				break
 			}
 			prev[i], next[i] = l.findPNForLevel(key, prev[i], i)
@@ -312,18 +311,17 @@ func (l *SkipList) Length() int {
 	length := 0
 	head := l.getHead()
 	x := head
-	valCnt := 0
 	for x != nil {
 		next := x.next[0]
 		length += 1
 		nextNode := l.arena.getNodeV3(next)
 		//todo to ignore for test only
-		if nextNode != nil {
-			off, size := nextNode.getValueOffset()
-			vs := l.arena.getVal(off, size)
-			fmt.Println(string(vs.Value))
-			valCnt++
-		}
+		// if nextNode != nil {
+		// 	off, size := nextNode.getValueOffset()
+		// 	vs := l.arena.getVal(off, size)
+		// 	fmt.Println(string(vs.Value))
+		// 	valCnt++
+		// }
 		x = nextNode
 	}
 	return length
@@ -364,5 +362,75 @@ func FastRand() uint32
 func AssertTruef(b bool, format string, args ...interface{}) {
 	if !b {
 		log.Fatalf("%+v", errors.Errorf(format, args...))
+	}
+}
+
+func (l *SkipList) Add(e *Entry) {
+	key, v := e.Key, ValueStruct{
+		Value:     e.Value,
+		ExpiresAt: e.ExpiresAt,
+	}
+
+	listHeight := l.getHeight()
+	var prev [MaxLevels + 1]uint32
+	var next [MaxLevels + 1]uint32
+	prev[listHeight] = l.headOff
+
+	for i := int(listHeight) - 1; i >= 0; i-- {
+		prev[i], next[i] = l.findPNForLevel(key, prev[i+1], i)
+		if prev[i] == next[i] {
+			vo := l.arena.putVal(v)
+			encValue := encodeValue(vo, v.EncodeSize())
+			prevNode := l.arena.getNodeV3(prev[i])
+			prevNode.setValue(l.arena, encValue)
+			return
+		}
+	}
+	height := l.randomLevel()
+	x := NewNode(l.arena, key, v, height)
+
+	// Try to increase s.height via CAS.
+	listHeight = l.getHeight()
+	for height > int(listHeight) {
+		if atomic.CompareAndSwapInt32(&l.level, listHeight, int32(height)) {
+			// Successfully increased skiplist.height.
+			break
+		}
+		listHeight = l.getHeight()
+	}
+
+	// We always insert from the base level and up. After you add a node in base level, we cannot
+	// create a node in the level above because it would have discovered the node in the base level.
+	for i := 0; i < height; i++ {
+		for {
+			//todo
+			if l.arena.getNodeV3(prev[i]) == nil {
+				AssertTrue(i > 1) // This cannot happen in base level.
+				// We haven't computed prev, next for this level because height exceeds old listHeight.
+				// For these levels, we expect the lists to be sparse, so we can just search from head.
+				prev[i], next[i] = l.findPNForLevel(key, l.headOff, i)
+				// Someone adds the exact same key before we are able to do so. This can only happen on
+				// the base level. But we know we are not on the base level.
+				AssertTrue(prev[i] != next[i])
+			}
+			x.next[i] = next[i]
+			pnode := l.arena.getNodeV3(prev[i])
+			if pnode.casNextOffset(i, next[i], l.arena.getNodeOffset(x)) {
+				// Managed to insert x between prev[i] and next[i]. Go to the next level.
+				break
+			}
+			// CAS failed. We need to recompute prev and next.
+			// It is unlikely to be helpful to try to use a different level as we redo the search,
+			// because it is unlikely that lots of nodes are inserted between prev[i] and next[i].
+			prev[i], next[i] = l.findPNForLevel(key, prev[i], i)
+			if prev[i] == next[i] {
+				AssertTruef(i == 0, "Equality can happen only on base level: %d", i)
+				vo := l.arena.putVal(v)
+				encValue := encodeValue(vo, v.EncodeSize())
+				prevNode := l.arena.getNodeV3(prev[i])
+				prevNode.setValue(l.arena, encValue)
+				return
+			}
+		}
 	}
 }
